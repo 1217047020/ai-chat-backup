@@ -1,0 +1,23 @@
+{
+  "id": "fixture-chatgpt-1",
+  "title": "Branch fixture",
+  "current_node": "assistant-current",
+  "mapping": {
+    "root": { "id": "root", "parent": null, "message": null },
+    "user": {
+      "id": "user",
+      "parent": "root",
+      "message": { "id": "user", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Question"] } }
+    },
+    "assistant-old": {
+      "id": "assistant-old",
+      "parent": "user",
+      "message": { "id": "assistant-old", "author": { "role": "assistant" }, "content": { "content_type": "text", "parts": ["Old answer"] } }
+    },
+    "assistant-current": {
+      "id": "assistant-current",
+      "parent": "user",
+      "message": { "id": "assistant-current", "author": { "role": "assistant" }, "content": { "content_type": "text", "parts": ["Current answer"] } }
+    }
+  }
+}

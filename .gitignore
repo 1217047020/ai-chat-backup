@@ -1,0 +1,11 @@
+node_modules/
+.wxt/
+dist/
+.output/
+.output-cn/
+coverage/
+*.local
+.env
+.env.*
+!.env.example
+.keys/

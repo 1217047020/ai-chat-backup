@@ -1,0 +1,33 @@
+{
+  "name": "ai-chat-backup",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Personal, incremental Google Drive backup for ChatGPT and Claude conversations.",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "identity:generate": "node scripts/generate-extension-identity.mjs",
+    "compile": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@wxt-dev/module-react": "1.1.0",
+    "dexie": "^4.4.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "wxt": "^0.20.27"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.322",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "fake-indexeddb": "^6.2.5",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
+  }
+}

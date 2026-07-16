@@ -1,0 +1,19 @@
+{
+  "uuid": "fixture-claude-1",
+  "name": "Artifact fixture",
+  "current_leaf_message_uuid": "assistant",
+  "chat_messages": [
+    { "uuid": "user", "sender": "human", "content": [{ "type": "text", "text": "Make a file" }] },
+    {
+      "uuid": "assistant",
+      "parent_message_uuid": "user",
+      "sender": "assistant",
+      "content": [
+        { "type": "thinking", "thinking": "Plan" },
+        { "type": "tool_use", "name": "create_file", "display_content": { "type": "code_block", "filename": "hello.js", "language": "javascript", "code": "console.log(1)" } },
+        { "type": "text", "text": "Done" }
+      ],
+      "attachments": [{ "uuid": "file-1", "file_name": "input.txt", "file_type": "text/plain", "file_size": 12, "extracted_content": "fixture body omitted" }]
+    }
+  ]
+}
