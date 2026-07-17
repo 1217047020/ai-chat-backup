@@ -15,8 +15,8 @@ export interface ScanOptions {
   scopes?: Scope[];
   signal?: AbortSignal;
   workerId?: string;
-  /** Drain a few uploads after each page to keep historical backpressure low. */
-  drainAfterPage?: boolean;
+  /** Starts background draining without blocking provider-side collection. */
+  triggerDrain?: () => void;
   maxPagesPerScope?: number;
 }
 
@@ -173,16 +173,18 @@ export class SyncCoordinator {
 
         let stoppedForBackpressure = false;
         let stoppedForPause = false;
-        for (const summary of page.items) {
+        for (const [i, summary] of page.items.entries()) {
           throwIfAborted(options.signal);
-          if (await this.processor.state.isPaused()) {
-            stoppedForPause = true;
-            break;
-          }
-          if (await this.incremental.isBackpressured()) {
-            stoppedForBackpressure = true;
-            report.skippedForBackpressure = true;
-            break;
+          if (i % 25 === 24) {
+            if (await this.processor.state.isPaused()) {
+              stoppedForPause = true;
+              break;
+            }
+            if (await this.incremental.isBackpressured()) {
+              stoppedForBackpressure = true;
+              report.skippedForBackpressure = true;
+              break;
+            }
           }
           seen.add(summary.conversationKey);
           const previousWatermark = watermark;
@@ -272,9 +274,7 @@ export class SyncCoordinator {
           completedAt: complete ? Date.now() : undefined,
         });
 
-        if (options.drainAfterPage !== false) {
-          await this.processor.drain(10);
-        }
+        options.triggerDrain?.();
       }
 
       if (complete) {

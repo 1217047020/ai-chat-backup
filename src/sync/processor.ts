@@ -16,6 +16,10 @@ export interface SyncProcessorOptions {
   }) => void;
 }
 
+export type ProcessOutcome = 'processed' | 'failed' | 'empty';
+
+const WORKER_CONCURRENCY = 3;
+
 /**
  * Durable queue consumer. The queue owns the snapshot body and the processor
  * owns only the short-lived Drive client; a service-worker restart therefore
@@ -38,11 +42,12 @@ export class SyncProcessor {
   }
 
   private readonly options: SyncProcessorOptions;
+  private cooldownUntil = 0;
 
-  async processOne(): Promise<boolean> {
-    if (await this.state.isPaused()) return false;
+  async processOne(): Promise<ProcessOutcome> {
+    if (await this.state.isPaused()) return 'empty';
     const job = await this.queue.claimNext<CanonicalConversationV1>(this.workerId);
-    if (!job) return false;
+    if (!job) return 'empty';
     this.options.onProgress?.({ kind: 'started', conversationKey: job.conversationKey });
     const heartbeat = setInterval(() => {
       void this.queue.renewLease(job.id, this.workerId);
@@ -61,9 +66,15 @@ export class SyncProcessor {
       });
       await this.queue.complete(job.id, this.workerId, result.mapping);
       this.options.onProgress?.({ kind: 'succeeded', conversationKey: job.conversationKey });
-      return true;
+      return 'processed';
     } catch (error) {
       const failure = driveFailure(error);
+      if (failure.retryAfterMs) {
+        this.cooldownUntil = Math.max(
+          this.cooldownUntil,
+          Date.now() + failure.retryAfterMs,
+        );
+      }
       await this.queue.fail(job.id, this.workerId, failure);
       if (failure.blockReason) {
         await this.state.setPaused(true, failure.blockReason);
@@ -74,19 +85,42 @@ export class SyncProcessor {
         error,
         retryable: failure.retryable,
       });
-      return false;
+      return 'failed';
     } finally {
       clearInterval(heartbeat);
     }
   }
 
-  async drain(maxJobs = this.options.maxJobs ?? 10): Promise<number> {
+  async drain(
+    maxJobs = this.options.maxJobs ?? 200,
+    concurrency = WORKER_CONCURRENCY,
+  ): Promise<number> {
     let completed = 0;
-    for (let i = 0; i < maxJobs; i += 1) {
-      const processed = await this.processOne();
-      if (!processed) break;
-      completed += 1;
-    }
+    let consecutiveFailures = 0;
+    let started = 0;
+    const worker = async () => {
+      while (started < maxJobs && consecutiveFailures < 5) {
+        if (await this.state.isPaused()) return;
+        const wait = this.cooldownUntil - Date.now();
+        if (wait > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(wait, 30_000)),
+          );
+        }
+        if (started >= maxJobs || consecutiveFailures >= 5) return;
+        started += 1;
+        const outcome = await this.processOne();
+        if (outcome === 'empty') return;
+        if (outcome === 'failed') consecutiveFailures += 1;
+        else {
+          consecutiveFailures = 0;
+          completed += 1;
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.max(1, concurrency) }, () => worker()),
+    );
     return completed;
   }
 }

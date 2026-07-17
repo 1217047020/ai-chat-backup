@@ -83,7 +83,18 @@ export function Dashboard({ compact = false }: DashboardProps) {
     try { const response = await sendRuntime({ type: 'get_status' }); if (isStatusResponse(response)) setStatus(response.status); else if (!response.ok) setMessage(response.error); }
     catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
   }, []);
-  useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 2_000); return () => window.clearInterval(timer); }, [refresh]);
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== 'hidden') void refresh();
+    };
+    refreshWhenVisible();
+    const timer = window.setInterval(refreshWhenVisible, 3_000);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  }, [refresh]);
   const run = useCallback(async (name: string, action: () => Promise<void>) => { setBusy(name); setMessage(undefined); try { await action(); await refresh(); } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); } finally { setBusy(undefined); } }, [refresh]);
   const connect = () => run('connect', async () => { const response = await sendRuntime({ type: 'connect_drive' }); if (!response.ok) throw new Error(response.error); });
   const startInitial = () => { if (!window.confirm(t.confirm)) return; void run('initial', async () => { const response = await sendRuntime({ type: 'start_initial_backup' }); if (!response.ok) throw new Error(response.error); }); };

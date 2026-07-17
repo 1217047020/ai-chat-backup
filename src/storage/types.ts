@@ -12,6 +12,7 @@ export interface DriveFileMapping {
   providerFolderId?: string;
   scopeFolderId?: string;
   conversationFolderId?: string;
+  conversationFolderName?: string;
   jsonFileId?: string;
   markdownFileId?: string;
   attachmentsFileId?: string;
@@ -63,7 +64,9 @@ export interface SyncJobRecord<TSnapshot = unknown> {
   scopeId: string;
   sourceConversationId: string;
   targetHash: string;
-  snapshot: TSnapshot;
+  /** Attached only while a claimed job is in memory; persisted in syncJobBodies. */
+  snapshot?: TSnapshot;
+  snapshotBytes?: number;
   status: SyncJobStatus;
   priority: number;
   attempts: number;
@@ -74,6 +77,11 @@ export interface SyncJobRecord<TSnapshot = unknown> {
   createdAt: number;
   updatedAt: number;
   lastError?: string;
+}
+
+export interface SyncJobBodyRecord<TSnapshot = unknown> {
+  id: string;
+  snapshot: TSnapshot;
 }
 
 export type ScanKind = 'incremental' | 'full';

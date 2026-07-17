@@ -24,7 +24,7 @@ export default defineConfig({
     short_name: "AI Chat Backup",
     description:
       "\u5c06 ChatGPT \u548c Claude \u4f1a\u8bdd\u81ea\u52a8\u589e\u91cf\u5907\u4efd\u5230 Google Drive\u3002",
-    version: "0.1.0",
+    version: "0.2.0",
     permissions: ["storage", "identity", "alarms"],
     host_permissions: [
       "https://chatgpt.com/*",
