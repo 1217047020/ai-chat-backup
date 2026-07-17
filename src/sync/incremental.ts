@@ -42,11 +42,7 @@ export class IncrementalSync {
 
   async pendingBytes(): Promise<number> {
     const jobs = await this.db.syncJobs.toArray();
-    const encoder = new TextEncoder();
-    return jobs.reduce(
-      (total, job) => total + encoder.encode(JSON.stringify(job.snapshot)).byteLength,
-      0,
-    );
+    return jobs.reduce((total, job) => total + (job.snapshotBytes ?? 0), 0);
   }
 
   async isBackpressured(): Promise<boolean> {

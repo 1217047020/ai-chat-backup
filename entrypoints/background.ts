@@ -20,6 +20,7 @@ import { SyncProcessor } from '../src/sync/processor';
 import { RuntimeProviderAdapter } from '../src/sync/runtime-adapter';
 
 const ALARM_NAME = 'ai-chat-backup-tick';
+const DRAIN_ALARM = 'ai-chat-backup-drain';
 const PLATFORMS: readonly Platform[] = ['chatgpt', 'claude'];
 const INITIAL_REQUESTED_KEY = 'backup.initialRequestedAt';
 const INITIAL_COMPLETED_KEY = 'backup.initialCompletedAt';
@@ -123,7 +124,26 @@ function drain(): Promise<number> {
   if (drainPromise) return drainPromise;
   drainPromise = (async () => {
     if (!await connected() || await runtime().state.isPaused()) return 0;
-    return runtime().processor.drain(40);
+    let total = 0;
+    const keepalive = setInterval(() => {
+      void chrome.runtime.getPlatformInfo(() => undefined);
+    }, 20_000);
+    try {
+      while (true) {
+        const completed = await runtime().processor.drain(50);
+        total += completed;
+        if (completed < 50) break;
+      }
+    } finally {
+      clearInterval(keepalive);
+    }
+    const counts = await runtime().processor.queue.counts();
+    if (counts.pending > 0) {
+      void chrome.alarms.create(DRAIN_ALARM, { delayInMinutes: 1 });
+    } else {
+      void chrome.alarms.clear(DRAIN_ALARM);
+    }
+    return total;
   })().finally(() => { drainPromise = undefined; });
   return drainPromise;
 }
@@ -153,7 +173,7 @@ async function scanAvailable(kind: ScanKind, only?: readonly Platform[]): Promis
         reports.push(await runtime().coordinator.scanAdapter(adapter, {
           kind,
           workerId: `scan:${platform}:${kind}:${Date.now()}`,
-          drainAfterPage: await connected(),
+          triggerDrain: () => { void drain(); },
         }));
       } catch (error) {
         reports.push({
@@ -202,30 +222,49 @@ async function scanAndPersist(kind: ScanKind, only?: readonly Platform[]): Promi
 
 async function status(): Promise<RuntimeResponse> {
   const current = runtime();
-  const counts = await current.processor.queue.counts();
-  const indexes = await current.processor.queue.listIndexes();
-  const scopes: Record<Platform, Set<string>> = { chatgpt: new Set(), claude: new Set() };
+  const [
+    counts,
+    chatgptConversations,
+    claudeConversations,
+    scopeKeys,
+    drive,
+    lastSuccessfulSyncAt,
+    paused,
+    pausedReason,
+    consent,
+  ] = await Promise.all([
+    current.processor.queue.counts(),
+    backupDb.conversationIndexes.where('platform').equals('chatgpt').count(),
+    backupDb.conversationIndexes.where('platform').equals('claude').count(),
+    backupDb.conversationIndexes.orderBy('[platform+scopeId]').uniqueKeys(),
+    current.state.getDriveConnection(),
+    current.state.getValue<number>(LAST_SUCCESS_KEY),
+    current.state.isPaused(),
+    current.state.blockedReason(),
+    consentGranted(),
+  ]);
+  const scopePairs = scopeKeys as unknown as Array<[string, string]>;
   const byPlatform: Record<Platform, { scopes: number; conversations: number }> = {
-    chatgpt: { scopes: 0, conversations: 0 }, claude: { scopes: 0, conversations: 0 },
+    chatgpt: {
+      scopes: scopePairs.filter(([platform]) => platform === 'chatgpt').length,
+      conversations: chatgptConversations,
+    },
+    claude: {
+      scopes: scopePairs.filter(([platform]) => platform === 'claude').length,
+      conversations: claudeConversations,
+    },
   };
-  for (const index of indexes) {
-    if (index.platform !== 'chatgpt' && index.platform !== 'claude') continue;
-    scopes[index.platform].add(index.scopeId);
-    byPlatform[index.platform].conversations += 1;
-  }
-  byPlatform.chatgpt.scopes = scopes.chatgpt.size;
-  byPlatform.claude.scopes = scopes.claude.size;
   return {
     ok: true,
     status: {
-      drive: await current.state.getDriveConnection(),
+      drive,
       queued: counts.pending,
       inProgress: counts.running,
       failed: counts.blocked,
-      lastSuccessfulSyncAt: await current.state.getValue<number>(LAST_SUCCESS_KEY),
-      paused: await current.state.isPaused(),
-      pausedReason: await current.state.blockedReason(),
-      consentGranted: await consentGranted(),
+      lastSuccessfulSyncAt,
+      paused,
+      pausedReason,
+      consentGranted: consent,
       byPlatform,
     },
   };
@@ -383,6 +422,12 @@ export default defineBackground(() => {
   chrome.runtime.onStartup.addListener(scheduleAlarm);
   chrome.tabs.onRemoved.addListener((tabId) => providerTabs.delete(tabId));
   chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === DRAIN_ALARM) {
+      void drain().catch((error) =>
+        runtime().state.setValue(LAST_SCAN_ERROR_KEY, errorMessage(error)),
+      );
+      return;
+    }
     if (alarm.name === ALARM_NAME) void scheduledScans().catch((error) => runtime().state.setValue(LAST_SCAN_ERROR_KEY, errorMessage(error)));
   });
   chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
@@ -392,4 +437,3 @@ export default defineBackground(() => {
     return true;
   });
 });
-

@@ -39,6 +39,7 @@ export class SyncQueue {
       'rw',
       this.db.conversationIndexes,
       this.db.syncJobs,
+      this.db.syncJobBodies,
       async () => {
         const currentIndex = await this.db.conversationIndexes.get(
           input.conversationKey,
@@ -70,6 +71,9 @@ export class SyncQueue {
           return 'unchanged';
         }
 
+        const snapshotBytes = new TextEncoder().encode(
+          JSON.stringify(input.snapshot),
+        ).byteLength;
         const job: SyncJobRecord<TSnapshot> = {
           id: jobId(input.conversationKey),
           conversationKey: input.conversationKey,
@@ -77,7 +81,7 @@ export class SyncQueue {
           scopeId: input.scopeId,
           sourceConversationId: input.sourceConversationId,
           targetHash: input.targetHash,
-          snapshot: input.snapshot,
+          snapshotBytes,
           status: 'pending',
           priority: input.priority ?? 0,
           attempts: 0,
@@ -85,7 +89,13 @@ export class SyncQueue {
           createdAt: currentJob?.createdAt ?? now,
           updatedAt: now,
         };
-        await this.db.syncJobs.put(job as SyncJobRecord);
+        await Promise.all([
+          this.db.syncJobs.put(job as SyncJobRecord),
+          this.db.syncJobBodies.put({
+            id: job.id,
+            snapshot: input.snapshot,
+          }),
+        ]);
         return 'enqueued';
       },
     );
@@ -99,36 +109,45 @@ export class SyncQueue {
     const now = options.now ?? Date.now();
     const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
 
-    return this.db.transaction('rw', this.db.syncJobs, async () => {
-      const candidates = await this.db.syncJobs
-        .where('nextAttemptAt')
-        .belowOrEqual(now)
-        .filter(
-          (job) =>
-            job.status === 'pending' ||
-            (job.status === 'running' && (job.leaseUntil ?? 0) <= now),
-        )
-        .toArray();
+    return this.db.transaction(
+      'rw',
+      this.db.syncJobs,
+      this.db.syncJobBodies,
+      async () => {
+        const candidates = await this.db.syncJobs
+          .where('nextAttemptAt')
+          .belowOrEqual(now)
+          .filter(
+            (job) =>
+              job.status === 'pending' ||
+              (job.status === 'running' && (job.leaseUntil ?? 0) <= now),
+          )
+          .toArray();
 
-      candidates.sort(
-        (a, b) =>
-          b.priority - a.priority ||
-          a.nextAttemptAt - b.nextAttemptAt ||
-          a.createdAt - b.createdAt,
-      );
-      const selected = candidates[0];
-      if (!selected) return undefined;
+        candidates.sort(
+          (a, b) =>
+            b.priority - a.priority ||
+            a.nextAttemptAt - b.nextAttemptAt ||
+            a.createdAt - b.createdAt,
+        );
+        const selected = candidates[0];
+        if (!selected) return undefined;
 
-      const claimed: SyncJobRecord = {
-        ...selected,
-        status: 'running',
-        leaseOwner: workerId,
-        leaseUntil: now + leaseMs,
-        updatedAt: now,
-      };
-      await this.db.syncJobs.put(claimed);
-      return claimed as SyncJobRecord<TSnapshot>;
-    });
+        const claimed: SyncJobRecord = {
+          ...selected,
+          status: 'running',
+          leaseOwner: workerId,
+          leaseUntil: now + leaseMs,
+          updatedAt: now,
+        };
+        await this.db.syncJobs.put(claimed);
+        const body = await this.db.syncJobBodies.get(selected.id);
+        return {
+          ...claimed,
+          snapshot: body?.snapshot,
+        } as SyncJobRecord<TSnapshot>;
+      },
+    );
   }
 
   async renewLease(
@@ -176,6 +195,7 @@ export class SyncQueue {
     await this.db.transaction(
       'rw',
       this.db.syncJobs,
+      this.db.syncJobBodies,
       this.db.conversationIndexes,
       async () => {
         const job = await this.db.syncJobs.get(jobIdToComplete);
@@ -194,7 +214,10 @@ export class SyncQueue {
           lastError: undefined,
           drive,
         });
-        await this.db.syncJobs.delete(job.id);
+        await Promise.all([
+          this.db.syncJobs.delete(job.id),
+          this.db.syncJobBodies.delete(job.id),
+        ]);
       },
     );
   }
@@ -279,13 +302,6 @@ export class SyncQueue {
     return { pending, running, blocked };
   }
 
-  async listIndexes(platform?: string) {
-    if (!platform) return this.db.conversationIndexes.toArray();
-    return this.db.conversationIndexes
-      .filter((record) => record.platform === platform)
-      .toArray();
-  }
-
   /**
    * Called after a complete source scan. A missing conversation needs two scans
    * at least 24 hours apart before it is marked missing_on_source.
@@ -303,14 +319,14 @@ export class SyncQueue {
         .equals([platform, scopeId])
         .toArray();
 
-      for (const record of records) {
+      const updated = records.map((record) => {
         if (seenConversationKeys.has(record.conversationKey)) {
-          await this.db.conversationIndexes.update(record.conversationKey, {
+          return {
+            ...record,
             missingCount: 0,
             firstMissingAt: undefined,
             lastSeenAt: now,
-          });
-          continue;
+          };
         }
 
         const firstMissingAt = record.firstMissingAt ?? now;
@@ -318,15 +334,17 @@ export class SyncQueue {
         const missingCount = separatedByOneDay
           ? Math.max(record.missingCount + 1, 2)
           : Math.max(record.missingCount, 1);
-        await this.db.conversationIndexes.update(record.conversationKey, {
+        return {
+          ...record,
           firstMissingAt,
           missingCount,
           sourceStatus:
             missingCount >= 2 ? 'missing_on_source' : record.sourceStatus,
           syncStatus:
             missingCount >= 2 ? 'missing_on_source' : record.syncStatus,
-        });
-      }
+        };
+      });
+      await this.db.conversationIndexes.bulkPut(updated);
     });
   }
 
@@ -335,12 +353,14 @@ export class SyncQueue {
       'rw',
       this.db.conversationIndexes,
       this.db.syncJobs,
+      this.db.syncJobBodies,
       this.db.scanCheckpoints,
       this.db.keyValues,
       async () => {
         await Promise.all([
           this.db.conversationIndexes.clear(),
           this.db.syncJobs.clear(),
+          this.db.syncJobBodies.clear(),
           this.db.scanCheckpoints.clear(),
           this.db.keyValues.clear(),
         ]);
